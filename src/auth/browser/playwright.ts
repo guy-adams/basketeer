@@ -51,28 +51,33 @@ export interface BrowserAuthOptions {
    * (brief) headed Chrome window, which Akamai accepts.
    */
   headlessRefresh?: boolean;
+  /**
+   * Without a TTY (e.g. run by an agent), `login()` can't wait for Enter, so it
+   * polls until the sign-in cookies appear instead. Gives up after this many
+   * milliseconds. Default 300000 (5 minutes).
+   */
+  loginTimeoutMs?: number;
 }
 
 export class BrowserAuthBackend implements AuthBackend {
   private readonly profileDir: string;
   private readonly channel: string;
   private readonly headlessRefresh: boolean;
+  private readonly loginTimeoutMs: number;
 
   constructor(opts: BrowserAuthOptions = {}) {
     this.profileDir = opts.profileDir ?? DEFAULT_PROFILE_DIR;
     this.channel = opts.channel ?? "chrome";
     this.headlessRefresh = opts.headlessRefresh ?? false;
+    this.loginTimeoutMs = opts.loginTimeoutMs ?? 300_000;
   }
 
-  /** Open a real Chrome, let the user sign in, then harvest the session. */
+  /**
+   * Open a real Chrome, let the user sign in, then harvest the session. On a
+   * TTY it waits for Enter; otherwise it polls until the `OAuth.AccessToken` +
+   * `UUID` cookies appear (up to `loginTimeoutMs`).
+   */
   async login(_credentials?: Credentials): Promise<Session> {
-    if (!process.stdin.isTTY) {
-      throw new Error(
-        "BrowserAuthBackend.login() needs an interactive terminal to wait for sign-in. " +
-          "For headless/serverless environments, harvest a session elsewhere and inject it " +
-          "with `sessionFromCookies(...)` or a custom AuthBackend.",
-      );
-    }
     const { chromium } = await this.loadPlaywright();
     const ctx = await chromium.launchPersistentContext(this.profileDir, {
       channel: this.channel,
@@ -92,13 +97,21 @@ export class BrowserAuthBackend implements AuthBackend {
       const page = ctx.pages()[0] ?? (await ctx.newPage());
       await page.goto(LOGIN_URL);
 
-      console.log(`\n${"=".repeat(70)}`);
-      console.log("TESCO LOGIN — a real Chrome window has opened.");
-      console.log("  1. Sign in normally (username, password, 2FA if asked).");
-      console.log("  2. Wait until you can see your account / the groceries homepage.");
-      console.log("  3. Return here and press Enter to harvest the session.");
-      console.log("=".repeat(70));
-      await waitForEnter("\n  >>> Press Enter once you are logged in <<<\n");
+      if (process.stdin.isTTY) {
+        console.log(`\n${"=".repeat(70)}`);
+        console.log("TESCO LOGIN — a real Chrome window has opened.");
+        console.log("  1. Sign in normally (username, password, 2FA if asked).");
+        console.log("  2. Wait until you can see your account / the groceries homepage.");
+        console.log("  3. Return here and press Enter to harvest the session.");
+        console.log("=".repeat(70));
+        await waitForEnter("\n  >>> Press Enter once you are logged in <<<\n");
+      } else {
+        // stderr, so a caller parsing stdout (e.g. the CLI's JSON) stays clean.
+        process.stderr.write(
+          `Sign in to Tesco in the Chrome window (waiting up to ${Math.round(this.loginTimeoutMs / 1000)}s)...\n`,
+        );
+        await waitForSignIn(page, ctx, this.loginTimeoutMs);
+      }
 
       await page.goto(HOME_URL, { waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
       return sessionFromCookies(await ctx.cookies());
@@ -165,6 +178,26 @@ export class BrowserAuthBackend implements AuthBackend {
 }
 
 /** Minimal stdin Enter-gate (no deps). Resolves immediately if stdin is not a TTY. */
+/** Poll until Tesco's sign-in cookies are set and the page has left the login form. */
+async function waitForSignIn(
+  page: { url(): string },
+  ctx: { cookies(): Promise<{ name: string }[]> },
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const names = new Set((await ctx.cookies()).map((c) => c.name));
+    if (
+      names.has("OAuth.AccessToken") &&
+      names.has("UUID") &&
+      !page.url().includes("/account/login")
+    )
+      return;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new AuthExpiredError("Timed out waiting for Tesco sign-in in the browser.");
+}
+
 function waitForEnter(prompt: string): Promise<void> {
   return new Promise((resolve) => {
     if (!process.stdin.isTTY) return resolve();
