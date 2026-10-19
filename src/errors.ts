@@ -62,7 +62,7 @@ function scrubSecrets(s: string): string {
 export class LineRejectedError extends BasketeerError {
   readonly lineId: string;
   constructor(lineId: string) {
-    super(`Tesco rejected basket line ${lineId}`);
+    super(`Tesco rejected basket line for SKU ${JSON.stringify(lineId)}`);
     this.lineId = lineId;
   }
 }

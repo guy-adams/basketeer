@@ -356,7 +356,8 @@ export class Basketeer {
   /** Single-line path for `add`/`set`/`remove`: line-level failures throw. */
   private async updateLine(item: BasketItemInput): Promise<Basket> {
     const { basket, rejected, unavailable } = await this.updateBasket([item]);
-    if (rejected.length) throw new LineRejectedError(rejected.join(", "));
+    // Tesco's response id can be null, so name the SKU we actually sent.
+    if (rejected.length) throw new LineRejectedError(item.id);
     if (unavailable.length) throw new ItemUnavailableError(unavailable);
     return basket;
   }

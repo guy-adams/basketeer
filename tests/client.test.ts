@@ -329,6 +329,21 @@ describe("error taxonomy", () => {
     await expect(t.basket.set("999", 1)).rejects.toBeInstanceOf(LineRejectedError);
   });
 
+  it("names the sent SKU in LineRejectedError even when Tesco's update id is null", async () => {
+    const body = [
+      {
+        data: {
+          basket: { id: "b1", items: [], updates: { items: [{ id: null, successful: false }] } },
+        },
+      },
+    ];
+    const { impl } = stubFetch([{ body }]);
+    const t = new Basketeer({ session: SESSION, throttleMs: 0, fetchImpl: impl });
+    await expect(t.basket.set("322246580", 1)).rejects.toThrow(
+      'Tesco rejected basket line for SKU "322246580"',
+    );
+  });
+
   it("throws ItemUnavailableError and rolls back when an added line is not for sale", async () => {
     const unavailable = {
       data: {
