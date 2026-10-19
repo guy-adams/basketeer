@@ -12,7 +12,7 @@
 
 import { Command, InvalidArgumentError } from "commander";
 import { BrowserAuthBackend } from "./auth/browser/playwright.js";
-import type { NutritionFilter } from "./index.js";
+import type { Basket, BookedSlot, NutritionFilter, SearchResult, Slot } from "./index.js";
 import { Basketeer, BasketeerError, FileTokenStore } from "./index.js";
 import { isMainModule } from "./is-main.js";
 
@@ -34,6 +34,147 @@ export function nonNegativeNumber(value: string): number {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) throw new InvalidArgumentError("must be a non-negative number");
   return n;
+}
+
+/** commander parser: a Tesco SKU (tpnc, all digits), else a usage error that echoes the input. */
+export function skuArg(value: string): string {
+  if (!/^\d{6,12}$/.test(value))
+    throw new InvalidArgumentError(
+      `expected a numeric SKU like 322246580, got ${JSON.stringify(value)}`,
+    );
+  return value;
+}
+
+/** commander parser: a YYYY-MM-DD date, else a usage error. */
+export function isoDateArg(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value)))
+    throw new InvalidArgumentError("must be a date like 2026-10-27");
+  return value;
+}
+
+/** commander parser: an hour 0-24, else a usage error. */
+export function hourArg(value: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 24)
+    throw new InvalidArgumentError("must be an hour 0-24");
+  return n;
+}
+
+const UK_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  weekday: "short",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/** Date, weekday, HH:MM and minutes-past-midnight of an instant in UK local time (BST/GMT-aware). */
+export function ukParts(iso: string): {
+  date: string;
+  weekday: string;
+  time: string;
+  minutes: number;
+} {
+  const parts = UK_FORMAT.formatToParts(new Date(iso));
+  const get = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "";
+  const hour = get("hour");
+  const minute = get("minute");
+  return {
+    date: `${get("year")}-${get("month")}-${get("day")}`,
+    weekday: get("weekday"),
+    time: `${hour}:${minute}`,
+    minutes: Number(hour) * 60 + Number(minute),
+  };
+}
+
+/** A YYYY-MM-DD date plus `days`. */
+export function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Today's UK date plus `days`, as YYYY-MM-DD. */
+function ukDate(days = 0): string {
+  return addDays(ukParts(new Date().toISOString()).date, days);
+}
+
+/** A slot in UK local time, reduced to what a person (or agent) needs to pick one. */
+export function slotView(s: Slot | BookedSlot) {
+  const start = ukParts(s.start);
+  const end = ukParts(s.end);
+  return {
+    id: s.id,
+    date: start.date,
+    day: start.weekday,
+    start: start.time,
+    end: end.time,
+    charge: "charge" in s ? s.charge : null,
+    status: s.status,
+  };
+}
+
+export interface SlotFilter {
+  /** Only this UK date. */
+  date?: string;
+  /** Only slots starting at or after this UK hour. */
+  from?: number;
+  /** Only slots ending by this UK hour (24 = midnight). */
+  to?: number;
+  /** Only `Available` slots. */
+  available?: boolean;
+}
+
+/** Filter slots by UK-local date and time window. */
+export function filterSlots<T extends Slot>(slots: T[], f: SlotFilter): T[] {
+  return slots.filter((s) => {
+    const start = ukParts(s.start);
+    const end = ukParts(s.end);
+    const endMinutes = end.minutes === 0 && end.date !== start.date ? 24 * 60 : end.minutes;
+    return (
+      (!f.date || start.date === f.date) &&
+      (f.from === undefined || start.minutes >= f.from * 60) &&
+      (f.to === undefined || endMinutes <= f.to * 60) &&
+      (!f.available || s.status === "Available")
+    );
+  });
+}
+
+/** A search result reduced to what's needed to pick a product. */
+export function productBrief(r: SearchResult) {
+  return {
+    sku: r.sku,
+    title: r.title,
+    price: r.price.actual,
+    unitPrice:
+      r.price.unitPrice != null ? `${r.price.unitPrice}/${r.price.unitOfMeasure ?? "each"}` : null,
+    offers: r.promotions.map((p) => p.description),
+    available: r.available,
+  };
+}
+
+/** A basket with each line's product title looked up (one batched request per 15 SKUs). */
+async function basketView(client: Basketeer, b: Basket) {
+  const skus = b.items.map((i) => i.sku).filter((s): s is string => !!s);
+  const titles = new Map<string, string>();
+  for (let i = 0; i < skus.length; i += 15) {
+    for (const p of await client.getProducts(skus.slice(i, i + 15))) titles.set(p.sku, p.title);
+  }
+  return {
+    guidePrice: b.guidePrice,
+    itemCount: b.items.reduce((n, i) => n + i.quantity, 0),
+    items: b.items.map((i) => ({
+      sku: i.sku,
+      title: (i.sku && titles.get(i.sku)) ?? null,
+      quantity: i.quantity,
+      unit: i.unit,
+      cost: i.cost,
+      available: i.available,
+    })),
+  };
 }
 
 const store = new FileTokenStore();
@@ -58,9 +199,14 @@ program
 
 program
   .command("login")
-  .description("Open a real Chrome to sign in, then persist the harvested session.")
-  .action(async () => {
-    const client = new Basketeer({ store, authBackend: new BrowserAuthBackend() });
+  .description(
+    "Open a real Chrome to sign in, then persist the harvested session. " +
+      "Without a TTY it detects sign-in automatically instead of waiting for Enter.",
+  )
+  .option("--timeout <s>", "seconds to wait for sign-in when not on a TTY", nonNegativeInt, 300)
+  .action(async (opts: { timeout: number }) => {
+    const authBackend = new BrowserAuthBackend({ loginTimeoutMs: opts.timeout * 1000 });
+    const client = new Basketeer({ store, authBackend });
     const session = await client.login();
     emit({
       ok: true,
@@ -84,6 +230,7 @@ program
   .option("--max-sugar <g>", "only products with at most this sugar per 100g/ml", nonNegativeNumber)
   .option("--sort <field>", "sort hydrated results by a macro (e.g. protein)")
   .option("--hydrate <n>", "max results to fetch nutrition for (default 20)", nonNegativeInt)
+  .option("--brief", "print only sku, title, price, unit price, offers and availability")
   .action(
     async (
       query: string,
@@ -93,6 +240,7 @@ program
         maxSugar?: number;
         sort?: string;
         hydrate?: number;
+        brief?: boolean;
       },
     ) => {
       const usesNutrition = opts.minProtein != null || opts.maxSugar != null || opts.sort != null;
@@ -111,7 +259,9 @@ program
         );
         return;
       }
-      emit(await readClient().search(query, { limit: opts.limit }));
+      const page = await readClient().search(query, { limit: opts.limit });
+      const results = page.results.slice(0, opts.limit);
+      emit(opts.brief ? results.map(productBrief) : { ...page, results });
     },
   );
 
@@ -135,9 +285,11 @@ program
   .command("favourites")
   .description("List the customer's favourites (requires a session).")
   .option("--limit <n>", "max results", nonNegativeInt, 50)
-  .action(async (opts: { limit: number }) => {
+  .option("--brief", "print only sku, title, price, unit price, offers and availability")
+  .action(async (opts: { limit: number; brief?: boolean }) => {
     const client = await authedClient();
-    emit(await client.favourites({ limit: opts.limit }));
+    const page = await client.favourites({ limit: opts.limit });
+    emit(opts.brief ? page.results.slice(0, opts.limit).map(productBrief) : page);
   });
 
 // --- basket -----------------------------------------------------------------
@@ -146,50 +298,109 @@ const basket = program.command("basket").description("Inspect and edit the baske
 
 basket
   .command("get")
-  .description("Show the current basket.")
-  .action(async () => {
+  .description("Show the current basket, with product titles.")
+  .option("--raw", "print the full basket object instead of the summary")
+  .action(async (opts: { raw?: boolean }) => {
     const client = await authedClient();
-    emit(await client.basket.get());
+    const b = await client.basket.get();
+    emit(opts.raw ? b : await basketView(client, b));
   });
 
 basket
   .command("add")
   .description("Add <qty> (default 1) of a product to the basket (increments the line).")
-  .argument("<sku>", "product SKU / tpnc")
+  .argument("<sku>", "product SKU / tpnc", skuArg)
   .argument("[qty]", "quantity to add", nonNegativeInt, 1)
   .action(async (sku: string, qty: number) => {
     const client = await authedClient();
-    emit(await client.basket.add(sku, qty));
+    emit(await basketView(client, await client.basket.add(sku, qty)));
   });
 
 basket
   .command("set")
   .description("Set a basket line to an exact quantity (0 removes it).")
-  .argument("<sku>", "product SKU / tpnc")
+  .argument("<sku>", "product SKU / tpnc", skuArg)
   .argument("<qty>", "exact quantity", nonNegativeInt)
   .action(async (sku: string, qty: number) => {
     const client = await authedClient();
-    emit(await client.basket.set(sku, qty));
+    emit(await basketView(client, await client.basket.set(sku, qty)));
   });
 
 basket
   .command("remove")
   .description("Remove a line from the basket.")
-  .argument("<sku>", "product SKU / tpnc")
+  .argument("<sku>", "product SKU / tpnc", skuArg)
   .action(async (sku: string) => {
     const client = await authedClient();
-    emit(await client.basket.remove(sku));
+    emit(await basketView(client, await client.basket.remove(sku)));
   });
 
 // --- slots ------------------------------------------------------------------
 
 program
   .command("slots")
-  .description("List delivery slots (or collection slots with --collection).")
+  .description("List delivery slots in UK local time (or collection slots with --collection).")
   .option("--collection", "list click-and-collect slots instead of delivery")
-  .action(async (opts: { collection?: boolean }) => {
+  .option("--date <YYYY-MM-DD>", "only this day", isoDateArg)
+  .option("--start <YYYY-MM-DD>", "window start (default today)", isoDateArg)
+  .option(
+    "--end <YYYY-MM-DD>",
+    "window end (default start + 6 days; Tesco shows ~3 weeks ahead)",
+    isoDateArg,
+  )
+  .option("--from <hour>", "only slots starting at or after this UK hour", hourArg)
+  .option("--to <hour>", "only slots ending by this UK hour", hourArg)
+  .option("--available", "only slots with status Available")
+  .option("--raw", "print the full slot objects (UTC) instead of the UK-time summary")
+  .action(
+    async (
+      opts: SlotFilter & { collection?: boolean; start?: string; end?: string; raw?: boolean },
+    ) => {
+      const client = await authedClient();
+      const start = opts.date ?? opts.start ?? ukDate(0);
+      const end = opts.date ?? opts.end ?? addDays(start, 6);
+      const slots = opts.collection
+        ? await client.slots.listCollection({ start, end })
+        : await client.slots.list({ start, end });
+      emit(opts.raw ? slots : filterSlots(slots, opts).map(slotView));
+    },
+  );
+
+const slot = program
+  .command("slot")
+  .description("Book, release, or show your reserved delivery slot.");
+
+slot
+  .command("book")
+  .description("Reserve a delivery slot by id (from `slots`). Replaces any slot already held.")
+  .argument("<slotId>", "slot id")
+  .action(async (slotId: string) => {
     const client = await authedClient();
-    emit(opts.collection ? await client.slots.listCollection() : await client.slots.list());
+    const booked = await client.slots.book(slotId);
+    emit({ ...slotView(booked), reservationExpiry: booked.reservationExpiry });
+  });
+
+slot
+  .command("release")
+  .description("Release a reserved delivery slot by id.")
+  .argument("<slotId>", "slot id")
+  .action(async (slotId: string) => {
+    const client = await authedClient();
+    emit(slotView(await client.slots.release(slotId)));
+  });
+
+slot
+  .command("current")
+  .description("Show the delivery slot currently held (searches the next 3 weeks).")
+  .action(async () => {
+    const client = await authedClient();
+    const slots = await client.slots.list({ start: ukDate(0), end: ukDate(21) });
+    const held = slots.filter((s) => s.status === "Reserved" || s.status === "Booked");
+    emit(
+      held.length
+        ? held.map(slotView)
+        : { reserved: null, note: "No delivery slot reserved in the next 3 weeks." },
+    );
   });
 
 // --- orders -----------------------------------------------------------------

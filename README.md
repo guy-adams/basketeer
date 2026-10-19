@@ -223,7 +223,7 @@ A stdio MCP server ships as the `basketeer-mcp` bin, exposing tools (`basketeer_
 The `basketeer` bin prints JSON to stdout, coded errors to stderr. Install globally for the bare command, or prefix with `npx -p basketeer`:
 
 ```bash
-basketeer login                      # one-time browser sign-in
+basketeer login                      # one-time browser sign-in (no TTY: detects sign-in itself)
 basketeer search "oat milk" --limit 5
 basketeer search "high protein yogurt" --min-protein 10 --max-sugar 7 --sort protein
 basketeer product 254656543
@@ -231,6 +231,10 @@ basketeer nutrition 292990463        # normalized macros + micros for a product
 basketeer favourites
 basketeer basket add 258114107 1     # increment;  basket set <sku> <qty> for exact
 basketeer slots                      # --collection for click-and-collect
+basketeer slots --date 2026-10-27 --from 7 --to 9 --available   # UK local time
+basketeer slot book <slotId>         # reserve (replaces any slot held); slot release <slotId>
+basketeer slot current               # the slot you hold, next 3 weeks
+basketeer search "milk" --brief      # just sku/title/price/offers (also on favourites)
 basketeer orders list
 basketeer checkout                   # prints the payment URL; you finish in a browser
 ```
