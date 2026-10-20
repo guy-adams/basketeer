@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tesco Voice</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --panel: #fff; --ink: #1b2430; --muted: #6b7684; --line: #e2e6ea;
+    --brand: #00539f; --accent: #e81c2e; --me: #00539f; --me-ink: #fff; --bot: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f141a; --panel: #171e26; --ink: #e6ebf0; --muted: #8b96a3; --line: #263039;
+      --brand: #4a9be8; --me: #2b6cb0; --bot: #222b35; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.45 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink); }
+  .app { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px;
+    grid-template-columns: 1fr 320px; grid-template-rows: minmax(0, 1fr); height: 100dvh; }
+  @media (max-width: 800px) { .app { grid-template-columns: 1fr; grid-template-rows: auto; height: auto; } .log { max-height: 65dvh; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+  .chat { display: flex; flex-direction: column; min-height: 0; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 18px; margin: 0; color: var(--brand); }
+  .modes { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .modes button { border: 0; background: none; color: var(--muted); padding: 6px 12px; font: inherit; font-size: 14px; cursor: pointer; }
+  .modes button.on { background: var(--brand); color: #fff; }
+  .log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 300px; }
+  .msg { flex: none; max-width: 80%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; }
+  .msg.me { align-self: flex-end; background: var(--me); color: var(--me-ink); border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--bot); border-bottom-left-radius: 4px; }
+  .msg.sys { align-self: center; color: var(--muted); font-size: 13px; }
+  .day { align-self: center; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-top: 8px; }
+  .controls { border-top: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  #mic { width: 84px; height: 84px; border-radius: 50%; border: 0; background: var(--brand); color: #fff; cursor: pointer;
+    display: grid; place-items: center; transition: transform .1s, background .2s; position: relative; }
+  #mic:active { transform: scale(.96); }
+  #mic svg { width: 36px; height: 36px; }
+  #mic.rec { background: var(--accent); }
+  #mic.busy { background: var(--muted); }
+  #mic .ring { position: absolute; inset: -6px; border-radius: 50%; border: 3px solid var(--accent); opacity: 0; transition: opacity .1s; pointer-events: none; }
+  #status { color: var(--muted); font-size: 14px; min-height: 20px; text-align: center; }
+  form { display: flex; gap: 8px; width: 100%; }
+  form input { flex: 1; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; }
+  .ghost, form button { padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; cursor: pointer; }
+  .basket { padding: 16px; overflow-y: auto; }
+  .basket h2 { font-size: 16px; margin: 0 0 4px; }
+  .basket .total { color: var(--muted); font-size: 14px; margin-bottom: 12px; }
+  .basket ul { list-style: none; margin: 0; padding: 0; }
+  .basket li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .basket li .q { color: var(--muted); min-width: 24px; }
+  .basket li { align-items: center; }
+  .basket .thumb { width: 40px; height: 40px; object-fit: contain; border-radius: 6px; background: #fff; flex: none; }
+  .basket .thumb.none { visibility: hidden; }
+  .basket li .t { flex: 1; min-width: 0; overflow-wrap: anywhere; color: inherit; text-decoration: none; }
+  .basket li a.t[href]:hover { color: var(--brand); text-decoration: underline; }
+  .basket li.na .t { text-decoration: line-through; color: var(--muted); }
+  .row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--ink); max-width: 600px; width: calc(100% - 32px); padding: 20px; }
+  dialog::backdrop { background: rgb(0 0 0 / .4); }
+  dialog h2 { margin: 0 0 8px; font-size: 18px; }
+  dialog blockquote { margin: 12px 0; padding: 4px 14px; background: var(--bot); border-radius: 10px; font-size: 17px; line-height: 1.55; max-height: 50vh; overflow-y: auto; }
+  dialog blockquote p { margin: 10px 0; }
+  .hint { color: var(--muted); font-size: 14px; margin: 6px 0; }
+  .primary { padding: 9px 16px; border-radius: 10px; border: 0; background: var(--brand); color: #fff; font: inherit; cursor: pointer; }
+  .primary.rec { background: var(--accent); }
+  #vr-time { align-self: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .settings { width: 100%; }
+  .settings summary { cursor: pointer; color: var(--muted); font-size: 14px; text-align: center; list-style: none; user-select: none; }
+  .settings summary::-webkit-details-marker { display: none; }
+  .settings summary::before { content: "⚙︎ "; }
+  .settings summary::after { content: " ▸"; }
+  .settings[open] summary::after { content: " ▾"; }
+  .settings[open] .voice-pick { margin-top: 10px; }
+  .listcard { flex: none; align-self: flex-start; width: min(100%, 480px); border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+  .listcard h3 { margin: 0; padding: 10px 12px 2px; font-size: 15px; }
+  .listcard .sub { padding: 0 12px 6px; color: var(--muted); font-size: 13px; }
+  .listcard ul { list-style: none; margin: 0; padding: 0; }
+  .listcard li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 14px; }
+  .listcard li img { width: 36px; height: 36px; object-fit: contain; border-radius: 6px; background: #fff; flex: none; }
+  .listcard li .main { flex: 1; min-width: 0; }
+  .listcard li .main a, .listcard li .main span.tx { color: inherit; text-decoration: none; }
+  .listcard li .main a:hover { color: var(--brand); text-decoration: underline; }
+  .listcard li .dt { color: var(--muted); font-size: 12px; }
+  .listcard li .val { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .voice-pick select { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; }
+</style>
+</head>
+<body>
+<div class="app">
+  <section class="card chat">
+    <header>
+      <h1>Tesco Voice</h1>
+      <div class="modes" role="group" aria-label="Listening mode">
+        <button type="button" id="mode-tap" class="on">Tap to talk</button>
+        <button type="button" id="mode-free">Hands-free</button>
+      </div>
+    </header>
+    <div class="log" id="log">
+    </div>
+    <div class="controls">
+      <button type="button" id="mic" aria-label="Start listening">
+        <span class="ring" id="ring"></span>
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2Z"/></svg>
+      </button>
+      <div id="status">Tap the mic or hold Space to speak</div>
+      <form id="typed"><input id="text" placeholder="…or type a message" autocomplete="off"><button type="submit">Send</button></form>
+      <div class="row"><button type="button" class="ghost" id="reset">New conversation</button></div>
+      <details class="settings" id="settings">
+        <summary>Settings</summary>
+        <div class="row voice-pick">
+          <button type="button" class="ghost" id="mute">Voice: on</button>
+          <select id="voice" aria-label="Voice">
+            <option value="bm_george">George (male, RP)</option>
+            <option value="bm_fable">Fable (male)</option>
+            <option value="bm_lewis">Lewis (male)</option>
+            <option value="bm_daniel">Daniel (male)</option>
+            <option value="bf_emma">Emma (female)</option>
+            <option value="bf_isabella">Isabella (female)</option>
+            <option value="bf_alice">Alice (female)</option>
+            <option value="bf_lily">Lily (female)</option>
+            <option value="mine">My voice (Chatterbox)</option>
+            <option value="mine_f5">My voice (F5-TTS)</option>
+          </select>
+          <select id="speed" aria-label="Speaking speed">
+            <option value="0.85">Leisurely</option>
+            <option value="0.95">Measured</option>
+            <option value="1.05">Brisk</option>
+          </select>
+          <button type="button" class="ghost" id="preview">Preview</button>
+          <button type="button" class="ghost" id="record-voice">Record my voice</button>
+        </div>
+      </details>
+    </div>
+  </section>
+  <aside class="card basket" id="basket"><h2>Basket</h2><div class="total">Loading…</div></aside>
+</div>
+<dialog id="voice-dlg">
+  <h2>Record your voice</h2>
+  <p class="hint">Somewhere quiet, read this aloud at your normal pace, the way you'd chat to a friend. It takes about a minute. Read numbers however you'd naturally say them. Stop early if you like (at least 6 seconds), but the first paragraph matters most.</p>
+  <blockquote>
+    <p>Right, let's sort out this week's shop. Could you add a loaf of sourdough, six free-range eggs and some mature cheddar? Actually, make that two loaves, because we've got friends coming round on Thursday the 23rd.</p>
+    <p>I'll need 2 pints of semi-skimmed milk, 500g of beef mince and a 400g tin of chopped tomatoes. How much is the olive oil? £4.50 seems a bit steep. Is there anything on offer, maybe 3 for £10?</p>
+    <p>Oh, and don't forget the bananas, a bag of new potatoes, and something nice for pudding. Sticky toffee, perhaps, or a lemon tart.</p>
+    <p>What's the earliest delivery slot? Saturday between 8 and 9 in the morning would be perfect, but 7:30 on Sunday evening is fine too. Brilliant, thank you. That's everything for now.</p>
+  </blockquote>
+  <div class="row">
+    <button type="button" id="vr-btn" class="primary">Start recording</button>
+    <span id="vr-time">0s</span>
+  </div>
+  <p id="vr-status" class="hint"></p>
+  <div class="row"><button type="button" class="ghost" id="vr-close">Close</button></div>
+</dialog>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $("log"), mic = $("mic"), status = $("status"), ring = $("ring");
+
+let mode = "tap";          // "tap" | "free"
+let state = "idle";        // idle | recording | thinking | speaking
+let voiceOn = true;
+const prefs = (() => { try { return JSON.parse(localStorage.getItem("voicePrefs")) ?? {}; } catch { return {}; } })();
+$("voice").value = prefs.voice ?? "bm_george";
+$("speed").value = prefs.speed ?? "0.95";
+const savePrefs = () => { try { localStorage.setItem("voicePrefs", JSON.stringify({ voice: $("voice").value, speed: $("speed").value })); } catch {} };
+let stream, recorder, chunks = [], audioCtx, analyser, vadTimer, currentAudio;
+
+function setStatus(t) { status.textContent = t; }
+function setState(s) {
+  state = s;
+  mic.classList.toggle("rec", s === "recording");
+  mic.classList.toggle("busy", s === "thinking");
+  if (s === "idle") setStatus(mode === "tap" ? "Tap the mic or hold Space to speak" : (stream ? "Listening… just start talking" : "Tap the mic to start hands-free, or hold Space"));
+  if (s === "recording") setStatus(pttHeld ? "Listening… release Space to send" : mode === "tap" ? "Listening… tap again to send" : "Listening…");
+  if (s === "speaking") setStatus("Speaking… tap the mic or press Space to interrupt");
+}
+let lastDay = null;
+function add(cls, text, at = new Date()) {
+  const when = new Date(at);
+  const day = when.toDateString();
+  if (day !== lastDay) {
+    lastDay = day;
+    const sep = document.createElement("div");
+    sep.className = "day";
+    sep.textContent = when.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+    log.appendChild(sep);
+  }
+  const d = document.createElement("div");
+  d.className = cls === "card" ? "listcard" : `msg ${cls}`;
+  if (typeof text === "string") d.textContent = text;
+  else d.appendChild(text);
+  d.title = when.toLocaleString("en-GB");
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+async function getStream() {
+  if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  return stream;
+}
+function startRecorder() {
+  chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.start();
+  setState("recording");
+}
+function stopRecorder() {
+  return new Promise((ok) => {
+    if (!recorder || recorder.state === "inactive") return ok(null);
+    recorder.onstop = () => ok(new Blob(chunks, { type: recorder.mimeType }));
+    recorder.stop();
+  });
+}
+
+// ---------- hands-free voice activity detection ----------
+const VAD = { startLevel: 0.025, stopLevel: 0.015, silenceMs: 1200, minSpeechMs: 400 };
+function startVad() {
+  audioCtx ??= new AudioContext();
+  const src = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
+  src.connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  let speechStart = 0, lastLoud = 0;
+  vadTimer = setInterval(async () => {
+    if (sampling || pttHeld) return;
+    analyser.getFloatTimeDomainData(buf);
+    const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+    ring.style.opacity = state === "recording" ? Math.min(1, rms * 25) : 0;
+    const now = performance.now();
+    if (state === "idle" && rms > VAD.startLevel) { speechStart = lastLoud = now; startRecorder(); }
+    else if (state === "recording") {
+      if (rms > VAD.stopLevel) lastLoud = now;
+      else if (now - lastLoud > VAD.silenceMs) {
+        const spoke = lastLoud - speechStart;
+        const blob = await stopRecorder();
+        if (spoke < VAD.minSpeechMs) setState("idle");     // a cough or click
+        else handleAudio(blob);
+      }
+    }
+  }, 50);
+}
+function stopVad() { clearInterval(vadTimer); vadTimer = null; ring.style.opacity = 0; }
+
+// ---------- mic button ----------
+// ---------- space bar: push to talk (hold to record, release to send) ----------
+let pttHeld = false, pttStart = 0;
+const typingTarget = (el) => el?.closest?.("input, textarea, select, [contenteditable], dialog");
+document.addEventListener("keydown", async (e) => {
+  if (e.code !== "Space" || typingTarget(e.target)) return;
+  e.preventDefault(); // no page scroll, and don't "click" a focused button
+  if (e.repeat || pttHeld || state === "thinking") return;
+  if (state === "speaking") stopSpeaking();
+  pttHeld = true; pttStart = performance.now();
+  try { await getStream(); } catch (err) { pttHeld = false; add("sys", `Microphone blocked: ${err.message}`); return; }
+  if (!pttHeld) return; // released while the mic was starting
+  if (state === "idle") startRecorder(); // (if hands-free was already recording, just keep going)
+  setState("recording");
+});
+document.addEventListener("keyup", async (e) => {
+  if (e.code !== "Space" || !pttHeld) return;
+  e.preventDefault();
+  pttHeld = false;
+  if (state !== "recording") return;
+  const blob = await stopRecorder();
+  if (performance.now() - pttStart < 300) { setState("idle"); return; } // an accidental tap
+  handleAudio(blob);
+});
+window.addEventListener("blur", () => { if (pttHeld) document.dispatchEvent(new KeyboardEvent("keyup", { code: "Space" })); });
+
+mic.onclick = async () => {
+  if (state === "speaking") { stopSpeaking(); return; }
+  if (state === "thinking") return;
+  try { await getStream(); } catch (e) { add("sys", `Microphone blocked: ${e.message}`); return; }
+  if (mode === "tap") {
+    if (state === "idle") startRecorder();
+    else if (state === "recording") handleAudio(await stopRecorder());
+  } else {
+    if (vadTimer) { stopVad(); if (state === "recording") await stopRecorder(); releaseStream(); setState("idle"); }
+    else { startVad(); setState("idle"); }
+  }
+};
+function releaseStream() { for (const t of stream?.getTracks() ?? []) t.stop(); stream = null; }
+
+function setMode(m) {
+  if (m === mode) return;
+  stopVad(); stopRecorder(); releaseStream();
+  mode = m;
+  $("mode-tap").classList.toggle("on", m === "tap");
+  $("mode-free").classList.toggle("on", m === "free");
+  setState("idle");
+}
+$("mode-tap").onclick = () => setMode("tap");
+$("mode-free").onclick = () => setMode("free");
+
+// ---------- the turn ----------
+async function handleAudio(blob) {
+  if (!blob || blob.size < 1000) { setState("idle"); return; }
+  setState("thinking"); setStatus("Transcribing…");
+  try {
+    const r = await fetch("/api/stt", { method: "POST", body: blob });
+    const { text, error } = await r.json();
+    if (error) throw new Error(error);
+    if (!text) { setStatus("Didn't catch that"); setTimeout(() => state === "thinking" && setState("idle"), 1200); return; }
+    await send(text);
+  } catch (e) { add("sys", `Transcription failed: ${e.message}`); setState("idle"); }
+}
+
+async function send(text) {
+  add("me", text);
+  setState("thinking"); setStatus("Thinking…");
+  let reply = "";
+  try {
+    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === "status") setStatus(`${ev.text}…`);
+        if (ev.type === "reply") { reply = ev.text; add("bot", reply); speak(reply); }
+        if (ev.type === "basket") renderBasket(ev.basket);
+        if (ev.type === "card") add("card", cardNode(ev.card));
+        if (ev.type === "error") add("sys", `Error: ${ev.text}`);
+      }
+    }
+  } catch (e) { add("sys", `Error: ${e.message}`); }
+  if (!reply && state === "thinking") setState("idle");
+}
+
+// ---------- speech out ----------
+async function tts(text, voice) {
+  return fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice, speed: Number($("speed").value) }) });
+}
+async function speak(text) {
+  if (!voiceOn || !text) { setState("idle"); return; }
+  setState("speaking");
+  try {
+    let r = await tts(text, $("voice").value);
+    if (!r.ok && $("voice").value.startsWith("mine")) {
+      setStatus("Your voice isn't ready, using George");
+      r = await tts(text, "bm_george");
+    }
+    if (!r.ok) throw new Error("tts failed");
+    currentAudio = new Audio(URL.createObjectURL(await r.blob()));
+    currentAudio.onended = () => { currentAudio = null; if (state === "speaking") setState("idle"); };
+    await currentAudio.play();
+  } catch {
+    // Fall back to the browser's own voice.
+    const u = new SpeechSynthesisUtterance(text); u.lang = "en-GB";
+    u.onend = () => state === "speaking" && setState("idle");
+    speechSynthesis.speak(u);
+  }
+}
+function stopSpeaking() {
+  currentAudio?.pause(); currentAudio = null; speechSynthesis.cancel(); setState("idle");
+}
+
+// ---------- on-screen lists from the agent ----------
+function cardNode(card) {
+  const frag = document.createDocumentFragment();
+  const h = document.createElement("h3"); h.textContent = card.title; frag.appendChild(h);
+  if (card.subtitle) { const sub = document.createElement("div"); sub.className = "sub"; sub.textContent = card.subtitle; frag.appendChild(sub); }
+  const ul = document.createElement("ul");
+  for (const it of card.items ?? []) {
+    const li = document.createElement("li");
+    if (it.image !== undefined) {
+      const img = document.createElement("img"); img.alt = ""; img.loading = "lazy";
+      if (it.image) img.src = it.image; else img.style.visibility = "hidden";
+      li.appendChild(img);
+    }
+    const main = document.createElement("div"); main.className = "main";
+    const t = document.createElement(it.link ? "a" : "span");
+    t.className = "tx"; t.textContent = it.text;
+    if (it.link && /^https:\/\//.test(it.link)) { t.href = it.link; t.target = "_blank"; t.rel = "noopener"; }
+    main.appendChild(t);
+    if (it.detail) { const dt = document.createElement("div"); dt.className = "dt"; dt.textContent = it.detail; main.appendChild(dt); }
+    li.appendChild(main);
+    if (it.value) { const v = document.createElement("span"); v.className = "val"; v.textContent = it.value; li.appendChild(v); }
+    ul.appendChild(li);
+  }
+  frag.appendChild(ul);
+  return frag;
+}
+
+// ---------- basket ----------
+const money = (n) => typeof n === "number" ? `£${n.toFixed(2)}` : "";
+function renderBasket(b) {
+  const el = $("basket");
+  if (!b || b.error) { el.innerHTML = `<h2>Basket</h2><div class="total"></div>`; el.querySelector(".total").textContent = b?.error ?? "Unavailable"; return; }
+  const items = b.items ?? [];
+  el.innerHTML = `<h2>Basket</h2><div class="total"></div><ul></ul>`;
+  el.querySelector(".total").textContent = `${b.itemCount ?? items.length} items · ${money(b.guidePrice)}`;
+  const ul = el.querySelector("ul");
+  for (const it of items) {
+    const li = document.createElement("li");
+    if (it.available === false) li.className = "na";
+    li.innerHTML = `<img class="thumb" alt="" loading="lazy"><span class="q"></span><a class="t" target="_blank" rel="noopener"></a><span class="c"></span>`;
+    li.querySelector(".q").textContent = `${it.quantity}×`;
+    const img = li.querySelector(".thumb");
+    if (it.imageUrl) img.src = it.imageUrl;
+    else img.classList.add("none");
+    const link = li.querySelector(".t");
+    link.textContent = it.title;
+    if (/^\d+$/.test(it.sku ?? "")) link.href = `https://www.tesco.com/shop/en-GB/products/${it.sku}`;
+    li.querySelector(".c").textContent = money(it.cost);
+    ul.appendChild(li);
+  }
+}
+
+$("typed").onsubmit = (e) => { e.preventDefault(); const t = $("text").value.trim(); if (t && state !== "thinking") { $("text").value = ""; send(t); } };
+$("reset").onclick = async () => {
+  if (state === "thinking") return;
+  stopSpeaking();
+  await fetch("/api/reset", { method: "POST" });
+  log.innerHTML = ""; lastDay = null;
+  add("sys", "New conversation started");
+};
+$("mute").onclick = () => { voiceOn = !voiceOn; $("mute").textContent = `Voice: ${voiceOn ? "on" : "off"}`; if (!voiceOn) stopSpeaking(); };
+
+const SAMPLE = "Good afternoon. I've popped two pints of semi-skimmed and a rather nice sourdough in your basket. Anything else?";
+$("voice").onchange = $("speed").onchange = async () => {
+  savePrefs(); stopSpeaking();
+  if ($("voice").value.startsWith("mine")) {
+    const { recorded } = await (await fetch("/api/my-voice")).json();
+    if (!recorded) { openVoiceDialog(); return; }
+    warm();
+    setStatus("Loading your voice (the first time takes a minute or two)…");
+  }
+  speak(SAMPLE);
+};
+$("preview").onclick = () => { stopSpeaking(); speak(SAMPLE); };
+
+// ---------- record my voice ----------
+let sampling = false, vrRecorder, vrChunks, vrTimer, vrStart;
+function openVoiceDialog() { $("vr-status").textContent = ""; $("vr-time").textContent = "0s"; $("voice-dlg").showModal(); }
+$("record-voice").onclick = openVoiceDialog;
+$("vr-close").onclick = () => { if (vrRecorder?.state === "recording") vrRecorder.stop(); $("voice-dlg").close(); };
+$("vr-btn").onclick = async () => {
+  const btn = $("vr-btn");
+  if (vrRecorder?.state === "recording") { vrRecorder.stop(); return; }
+  try { await getStream(); } catch (e) { $("vr-status").textContent = `Microphone blocked: ${e.message}`; return; }
+  sampling = true; vrChunks = [];
+  vrRecorder = new MediaRecorder(stream);
+  vrRecorder.ondataavailable = (e) => e.data.size && vrChunks.push(e.data);
+  vrRecorder.onstop = async () => {
+    clearInterval(vrTimer); sampling = false;
+    if (mode === "tap" && state === "idle") releaseStream();
+    btn.classList.remove("rec"); btn.textContent = "Record again";
+    const secs = (performance.now() - vrStart) / 1000;
+    if (!$("voice-dlg").open) return;
+    if (secs < 6) { $("vr-status").textContent = "That was a bit short. Please read the whole paragraph."; return; }
+    btn.disabled = true;
+    $("vr-status").textContent = "Saving your recording…";
+    try {
+      const r = await fetch("/api/my-voice", { method: "POST", body: new Blob(vrChunks, { type: vrRecorder.mimeType }) });
+      const out = await r.json();
+      if (!r.ok) throw new Error(out.error);
+      if (!$("voice").value.startsWith("mine")) $("voice").value = "mine";
+      savePrefs();
+      await waitForEngines(out.seconds);
+    } catch (e) { $("vr-status").textContent = `Couldn't use that recording: ${e.message}`; }
+    btn.disabled = false;
+  };
+  vrRecorder.start(); vrStart = performance.now();
+  btn.classList.add("rec"); btn.textContent = "Stop";
+  vrTimer = setInterval(() => { $("vr-time").textContent = `${Math.floor((performance.now() - vrStart) / 1000)}s`; }, 250);
+};
+
+// After a recording, both cloning engines process it; show each one's progress.
+const ENGINE_NAMES = { mine: "Chatterbox", mine_f5: "F5-TTS" };
+const STATUS_TEXT = { starting: "loading model…", preparing: "learning your voice…", ready: "ready ✓" };
+async function waitForEngines(seconds) {
+  const el = $("vr-status");
+  let played = false;
+  for (;;) {
+    const { engines = {} } = await (await fetch("/api/my-voice")).json();
+    const lines = Object.entries(ENGINE_NAMES).map(([k, name]) => `${name}: ${STATUS_TEXT[engines[k]] ?? engines[k] ?? "waiting…"}`);
+    el.textContent = `Got ${seconds}s of speech. ${lines.join(" · ")}${played ? " (playing a sample)" : " (the first time takes a minute or two)"}`;
+    const selected = $("voice").value;
+    if (!played && engines[selected] === "ready") { played = true; stopSpeaking(); speak(SAMPLE); }
+    if (Object.keys(ENGINE_NAMES).every((k) => engines[k] === "ready" || engines[k]?.startsWith("error"))) return;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+try { $("settings").open = localStorage.getItem("settingsOpen") === "1"; } catch {}
+$("settings").ontoggle = () => { try { localStorage.setItem("settingsOpen", $("settings").open ? "1" : "0"); } catch {} };
+
+// Start the selected cloning model in the background so it's warm when needed.
+function warm() {
+  const voice = $("voice").value;
+  if (voice.startsWith("mine")) fetch("/api/warm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+}
+warm();
+
+fetch("/api/history").then((r) => r.json()).then(({ messages, busy }) => {
+  for (const m of messages) add(m.role, m.role === "card" && m.card ? cardNode(m.card) : m.text, m.at);
+  if (!messages.length) add("sys", 'Ask for anything: "find a chicken curry recipe", "add milk and eggs", "what\'s in my basket?"');
+  if (busy) add("sys", "A request is still being worked on…");
+});
+fetch("/api/basket").then((r) => r.json()).then(renderBasket);
+setState("idle");
+</script>
+</body>
+</html>
