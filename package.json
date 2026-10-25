@@ -41,6 +41,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prebuild": "npm run clean",
     "build": "tsc -p tsconfig.json",
+    "postbuild": "node -e \"for (const f of ['dist/cli.js','dist/mcp-server.js']) require('node:fs').chmodSync(f, 0o755)\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.typecheck.json",

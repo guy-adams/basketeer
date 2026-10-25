@@ -15,6 +15,7 @@ import { BrowserAuthBackend } from "./auth/browser/playwright.js";
 import type { Basket, BookedSlot, NutritionFilter, SearchResult, Slot } from "./index.js";
 import { Basketeer, BasketeerError, FileTokenStore } from "./index.js";
 import { isMainModule } from "./is-main.js";
+import { bestDeal } from "./offers.js";
 
 /** Pretty-print any JSON-serialisable value to stdout. */
 function emit(value: unknown): void {
@@ -152,8 +153,35 @@ export function productBrief(r: SearchResult) {
     unitPrice:
       r.price.unitPrice != null ? `${r.price.unitPrice}/${r.price.unitOfMeasure ?? "each"}` : null,
     offers: r.promotions.map((p) => p.description),
+    deal: bestDeal(r.price.actual, r.promotions),
     available: r.available,
   };
+}
+
+/**
+ * On-offer products for a query, cheapest first by unit price after the deal
+ * (falling back to per-item price when Tesco gives no unit price).
+ */
+export function rankDeals(results: SearchResult[]) {
+  return results
+    .map((r) => {
+      const brief = productBrief(r);
+      const deal = brief.deal;
+      if (!deal || r.available === false) return null;
+      const ratio = r.price.actual ? deal.each / r.price.actual : 1;
+      const dealUnit = r.price.unitPrice != null ? r.price.unitPrice * ratio : null;
+      return {
+        ...brief,
+        dealUnitPrice:
+          dealUnit != null
+            ? `${Math.round(dealUnit * 100) / 100}/${r.price.unitOfMeasure ?? "each"}`
+            : null,
+        sortKey: dealUnit ?? deal.each,
+      };
+    })
+    .filter((d): d is NonNullable<typeof d> => d !== null)
+    .sort((a, b) => a.sortKey - b.sortKey)
+    .map(({ sortKey: _sortKey, ...rest }) => rest);
 }
 
 /** A basket with each line's product title looked up (one batched request per 15 SKUs). */
@@ -264,6 +292,19 @@ program
       emit(opts.brief ? results.map(productBrief) : { ...page, results });
     },
   );
+
+program
+  .command("deals")
+  .description(
+    "Find products on offer (Clubcard prices, multi-buys, BOGOF) for a query, cheapest unit price first.",
+  )
+  .argument("<query>", 'search terms, broad enough to catch alternatives (e.g. "cheddar")')
+  .option("--limit <n>", "max deals to print", nonNegativeInt, 5)
+  .option("--scan <n>", "search results to scan for offers", nonNegativeInt, 40)
+  .action(async (query: string, opts: { limit: number; scan: number }) => {
+    const page = await readClient().search(query, { limit: opts.scan });
+    emit(rankDeals(page.results.slice(0, opts.scan)).slice(0, opts.limit));
+  });
 
 program
   .command("product")
