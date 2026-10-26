@@ -37,8 +37,10 @@
   #mic:active { transform: scale(.96); }
   #mic svg { width: 36px; height: 36px; }
   #mic.rec { background: var(--accent); }
-  #mic.busy { background: var(--muted); }
   #mic .ring { position: absolute; inset: -6px; border-radius: 50%; border: 3px solid var(--accent); opacity: 0; transition: opacity .1s; pointer-events: none; }
+  #mic.working::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 3px dashed var(--muted); animation: spin 2s linear infinite; pointer-events: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .msg.me.pending { opacity: .55; }
   #status { color: var(--muted); font-size: 14px; min-height: 20px; text-align: center; }
   form { display: flex; gap: 8px; width: 100%; }
   form input { flex: 1; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; }
@@ -156,7 +158,10 @@ const $ = (id) => document.getElementById(id);
 const log = $("log"), mic = $("mic"), status = $("status"), ring = $("ring");
 
 let mode = "tap";          // "tap" | "free"
-let state = "idle";        // idle | recording | thinking | speaking
+let state = "idle";        // idle | recording | speaking  (the mic never waits on the agent)
+let working = false;       // a request is with the agent
+let workStatus = "";
+const queue = [];          // said while the agent was working: [{ text, node }]
 let voiceOn = true;
 const prefs = (() => { try { return JSON.parse(localStorage.getItem("voicePrefs")) ?? {}; } catch { return {}; } })();
 $("voice").value = prefs.voice ?? "bm_george";
@@ -168,11 +173,17 @@ function setStatus(t) { status.textContent = t; }
 function setState(s) {
   state = s;
   mic.classList.toggle("rec", s === "recording");
-  mic.classList.toggle("busy", s === "thinking");
-  if (s === "idle") setStatus(mode === "tap" ? "Tap the mic or hold Space to speak" : (stream ? "Listening… just start talking" : "Tap the mic to start hands-free, or hold Space"));
-  if (s === "recording") setStatus(pttHeld ? "Listening… release Space to send" : mode === "tap" ? "Listening… tap again to send" : "Listening…");
-  if (s === "speaking") setStatus("Speaking… tap the mic or press Space to interrupt");
+  showStatus();
+  if (s === "idle" && pendingSpeech) { const t = pendingSpeech; pendingSpeech = null; speak(t); }
 }
+function showStatus() {
+  mic.classList.toggle("working", working);
+  if (state === "recording") return setStatus(pttHeld ? "Listening… release Space to send" : mode === "tap" ? "Listening… tap again to send" : "Listening…");
+  if (state === "speaking") return setStatus("Speaking… tap the mic or press Space to interrupt");
+  if (working) return setStatus(`${workStatus || "Working"}…${queue.length ? ` (${queue.length} more queued)` : ""} You can keep talking.`);
+  setStatus(mode === "tap" ? "Tap the mic or hold Space to speak" : (stream ? "Listening… just start talking" : "Tap the mic to start hands-free, or hold Space"));
+}
+function setWork(t) { workStatus = t; showStatus(); }
 let lastDay = null;
 function add(cls, text, at = new Date()) {
   const when = new Date(at);
@@ -248,7 +259,7 @@ const typingTarget = (el) => el?.closest?.("input, textarea, select, [contentedi
 document.addEventListener("keydown", async (e) => {
   if (e.code !== "Space" || typingTarget(e.target)) return;
   e.preventDefault(); // no page scroll, and don't "click" a focused button
-  if (e.repeat || pttHeld || state === "thinking") return;
+  if (e.repeat || pttHeld) return;
   if (state === "speaking") stopSpeaking();
   pttHeld = true; pttStart = performance.now();
   try { await getStream(); } catch (err) { pttHeld = false; add("sys", `Microphone blocked: ${err.message}`); return; }
@@ -269,7 +280,6 @@ window.addEventListener("blur", () => { if (pttHeld) document.dispatchEvent(new 
 
 mic.onclick = async () => {
   if (state === "speaking") { stopSpeaking(); return; }
-  if (state === "thinking") return;
   try { await getStream(); } catch (e) { add("sys", `Microphone blocked: ${e.message}`); return; }
   if (mode === "tap") {
     if (state === "idle") startRecorder();
@@ -293,24 +303,57 @@ $("mode-tap").onclick = () => setMode("tap");
 $("mode-free").onclick = () => setMode("free");
 
 // ---------- the turn ----------
-async function handleAudio(blob) {
-  if (!blob || blob.size < 1000) { setState("idle"); return; }
-  setState("thinking"); setStatus("Transcribing…");
-  try {
-    const r = await fetch("/api/stt", { method: "POST", body: blob });
-    const { text, error } = await r.json();
-    if (error) throw new Error(error);
-    if (!text) { setStatus("Didn't catch that"); setTimeout(() => state === "thinking" && setState("idle"), 1200); return; }
-    await send(text);
-  } catch (e) { add("sys", `Transcription failed: ${e.message}`); setState("idle"); }
+// Speaking is never blocked: each utterance is transcribed straight away (in parallel),
+// then queued in the order it was said. Whatever piles up while the agent is busy goes
+// to it as one message when it's free.
+let sttChain = Promise.resolve();
+function handleAudio(blob) {
+  setState("idle"); // free the mic at once
+  if (!blob || blob.size < 1000) return;
+  const node = add("me", "…");
+  node.classList.add("pending");
+  const heard = fetch("/api/stt", { method: "POST", body: blob })
+    .then((r) => r.json())
+    .then(({ text, error }) => { if (error) throw new Error(error); return text?.trim(); });
+  sttChain = sttChain.then(async () => {
+    try {
+      const text = await heard;
+      if (!text) { node.remove(); if (!working) { setStatus("Didn't catch that"); setTimeout(showStatus, 1200); } return; }
+      node.textContent = text;
+      enqueue(text, node);
+    } catch (e) { node.remove(); add("sys", `Transcription failed: ${e.message}`); }
+  });
+}
+
+function enqueue(text, node = add("me", text)) {
+  node.classList.add("pending");
+  queue.push({ text, node });
+  pump();
+}
+
+async function pump() {
+  if (working || !queue.length) return;
+  working = true;
+  const batch = queue.splice(0);
+  for (const b of batch) b.node.classList.remove("pending");
+  setWork(batch.length > 1 ? `Working on your ${batch.length} requests` : "Thinking");
+  await send(batch.map((b) => b.text).join("\n"));
+  working = false;
+  showStatus();
+  pump();
 }
 
 async function send(text) {
-  add("me", text);
-  setState("thinking"); setStatus("Thinking…");
   let reply = "";
   try {
-    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    let r;
+    // 409: another tab's request is still running; wait for it rather than drop this one.
+    for (let tries = 0; ; tries++) {
+      r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      if (r.status !== 409 || tries > 300) break;
+      setWork("Waiting for the last request to finish");
+      await new Promise((ok) => setTimeout(ok, 1000));
+    }
     if (!r.ok) throw new Error((await r.json()).error);
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = "";
@@ -323,7 +366,7 @@ async function send(text) {
       for (const line of lines) {
         if (!line) continue;
         const ev = JSON.parse(line);
-        if (ev.type === "status") setStatus(`${ev.text}…`);
+        if (ev.type === "status") setWork(ev.text);
         if (ev.type === "reply") { reply = ev.text; add("bot", reply); speak(reply); }
         if (ev.type === "basket") renderBasket(ev.basket);
         if (ev.type === "card") add("card", cardNode(ev.card));
@@ -331,15 +374,17 @@ async function send(text) {
       }
     }
   } catch (e) { add("sys", `Error: ${e.message}`); }
-  if (!reply && state === "thinking") setState("idle");
 }
 
 // ---------- speech out ----------
 async function tts(text, voice) {
   return fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice, speed: Number($("speed").value) }) });
 }
+let pendingSpeech = null;
 async function speak(text) {
-  if (!voiceOn || !text) { setState("idle"); return; }
+  if (!voiceOn || !text) return;
+  if (state === "recording") { pendingSpeech = text; return; }
+  if (state === "speaking") stopSpeaking();
   setState("speaking");
   try {
     let r = await tts(text, $("voice").value);
@@ -414,9 +459,9 @@ function renderBasket(b) {
   }
 }
 
-$("typed").onsubmit = (e) => { e.preventDefault(); const t = $("text").value.trim(); if (t && state !== "thinking") { $("text").value = ""; send(t); } };
+$("typed").onsubmit = (e) => { e.preventDefault(); const t = $("text").value.trim(); if (t) { $("text").value = ""; enqueue(t); } };
 $("reset").onclick = async () => {
-  if (state === "thinking") return;
+  if (working || queue.length) { add("sys", "Wait for the current request to finish before starting afresh."); return; }
   stopSpeaking();
   await fetch("/api/reset", { method: "POST" });
   log.innerHTML = ""; lastDay = null;
